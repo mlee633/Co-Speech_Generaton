@@ -6,52 +6,11 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 from mediapipe.framework.formats import landmark_pb2
 from mediapipe import solutions
+import matplotlib.pyplot as plt
+import pandas as pd
 
 import time
 
-def crop_face_from_video(video_url):
-    # Load the pre-trained face detector and facial landmark detector
-    face_detector = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-
-    # Read the input video
-    video = cv2.VideoCapture(video_url)
-
-    # Get the video properties
-    frame_width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = int(video.get(cv2.CAP_PROP_FPS))
-    total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    # Create a VideoWriter object to save the cropped video
-    output_video = cv2.VideoWriter("output_video.mp4", cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
-
-    # Process each frame of the video
-    for _ in tqdm.tqdm(range(total_frames)):
-        ret, frame = video.read()
-        
-        if not ret:
-            break
-
-        # Convert the frame to grayscale for face detection
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-        # Detect faces in the frame
-        faces = face_detector.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
-
-        # Crop each detected face and save it
-        for (x, y, w, h) in faces:
-            face = frame[y:y + h, x:x + w]
-            output_video.write(face)        
-
-    # Release the video objects
-    video.release()
-    output_video.release()
-    cv2.destroyAllWindows()
-
-# Detect face and facial landmarks
-# Remove background and only remain the face (landmarks)
-# Output will be the video with only the face
-# Use mediapipe for face detection and facial landmarks, openCV for video processing
 def get_facial_landmarks(video_path, output_video_path):
     model_path = "./face_landmarker.task"
 
@@ -63,6 +22,7 @@ def get_facial_landmarks(video_path, output_video_path):
     options = FaceLandmarkerOptions(
         base_options = BaseOptions(model_asset_path = model_path),
         running_mode = VisionRunningMode.VIDEO,
+        output_face_blendshapes = True,
     )
 
     with FaceLandmarker.create_from_options(options) as landmarker:
@@ -74,9 +34,13 @@ def get_facial_landmarks(video_path, output_video_path):
 
         output_video = cv2.VideoWriter(output_video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (frame_width, frame_height))
 
-        for i in tqdm.tqdm(range(3600)):
+        # Pandas dataframe with 53 columns, representing the 52 face blendshapes categories and a timestamp
+        # First row is the column names
+        face_blendshapes = pd.DataFrame()
+
+        for i in tqdm.tqdm(range(total_frames)):
             ret, frame = video.read()
-            curr_time = mp.Timestamp.from_seconds(time.time()).value
+            curr_time = mp.Timestamp.from_seconds(i/fps).value
             
             if not ret:
                 break
@@ -85,12 +49,19 @@ def get_facial_landmarks(video_path, output_video_path):
             frame.flags.writeable = False
             mp_image = mp.Image(image_format = mp.ImageFormat.SRGB, data = frame)
             face_landmarker_result = landmarker.detect_for_video(mp_image, curr_time)
-
             # Black screen to remove background
             frame = np.zeros(frame.shape, dtype=np.uint8)
-            frame = draw_landmarks_on_image(frame, face_landmarker_result)
+
+            if len(face_landmarker_result.face_blendshapes) > 0:
+                face_blendshapes = append_face_blendshape(face_landmarker_result.face_blendshapes[0], face_blendshapes, i, fps)
+                frame = draw_landmarks_on_image(frame, face_landmarker_result)
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             output_video.write(frame)
+
+        # Save the face blendshapes to a CSV file
+        title = output_video_path.split("/")[-1].split(".")[0]
+        directory = output_video_path.split("/")[:-1][-1]
+        face_blendshapes.to_csv(f"./{directory}/{title}_face_blendshapes.csv", index=False)
 
         video.release()
         output_video.release()
@@ -137,7 +108,25 @@ def draw_landmarks_on_image(rgb_image, detection_result):
             .get_default_face_mesh_iris_connections_style())
         
     return annotated_image
+  
+def append_face_blendshape(face_blendshapes, face_blendshape_df, frame_number, fps):
+    # Extract the face blendshapes category names and scores.
+    face_blendshapes_names = [face_blendshapes_category.category_name for face_blendshapes_category in face_blendshapes]
+    face_blendshapes_scores = [face_blendshapes_category.score for face_blendshapes_category in face_blendshapes]
+
+    # Append the timestamp to the list of face blendshapes scores.
+    face_blendshapes_scores.append(frame_number / fps)
+
+    # Create a dictionary to represent the row to be appended
+    row_data = {name: score for name, score in zip(face_blendshapes_names, face_blendshapes_scores)}
+    row_data["timestamp"] = frame_number / fps
+
+    # Append the row data to the list
+    face_blendshape_df = pd.concat([face_blendshape_df, pd.DataFrame(row_data, index=[0])], ignore_index=True)
+
+    return face_blendshape_df
+
 
 
 if __name__ == "__main__":
-    get_facial_landmarks("output\segment_6056801418719529898_1.mp4")
+    get_facial_landmarks("./data_original/-4681178808489471001.mp4", "./data_processed/-4681178808489471001.mp4")

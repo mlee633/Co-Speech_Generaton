@@ -1,4 +1,6 @@
-/dataset/input/*
-/dataset/output/*
+/dataset/src/*
+/dataset/data_original/*
+/dataset/data_processed/*
+/dataset/__pycache__/*
 
 /.venv/*
